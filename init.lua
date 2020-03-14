@@ -1,107 +1,284 @@
---------------------------------------------------------
--- Minetest :: MetaPhysics Mod v1.0 (physics)
+d--------------------------------------------------------
+-- Minetest :: Interactive Physics (physics)
 --
--- See README.txt for licensing and other information.
--- Copyright (c) 2016-2019, Leslie Ellen Krause
+-- See README.txt for licensing and release notes.
+-- Copyright (c) 2019-2020, Leslie E. Krause
 --
 -- ./games/minetest_game/mods/physics/init.lua
 --------------------------------------------------------
 
-local physics = { }
+--local S1, S1_ = Stopwatch( "physics" )
 
-local props = {
-	world_gravity = 10,
-	air_viscosity = 0.1,
-	air_density = 0.5,
-	default_liquid = { viscosity = 0.0, density = 0.5 },
-	default_solid = { friction = 0.5, elasticity = 0.5 },
+local config = minetest.load_config( )
+
+local materials = { }
+local motion_sounds = {
+	diving = "default_water_footstep",
+	floating = "default_water_footstep",
+	hitting_stone = "default_hard_footstep",
+	hitting_dirt = "default_dirt_footstep",
+	hitting_sand = "default_sand_footstep",
+	hitting_gravel = "default_gravel_footstep",
+	hitting_wood = "default_wood_footstep",
+	hitting_grass = "default_grass_footstep",
+	hitting_glass = "default_glass_footstep",
+	hitting_metal = "default_metal_foostep",
+	hitting_snow = "default_snow_footstep",
 }
 
-local entities = { }
-local materials = {
-	["default:water_source"] = { type = "liquid", viscosity = 0.5, density = 0.5 },
-}
+--------------------
 
-physics.open_global_editor = function ( player_name )
+local min = math.min
+local max = math.max
+local abs = math.abs
+
+local function ramp( f, cur_v, max_v )
+       	-- min function handles NaN, but let's err on the side of caution
+        return max_v == 0 and f or f * min( 1, cur_v / max_v )
+end
+
+local function get_facing_axis( pos1, pos2 )
+        local x_abs = math.abs( pos1.x - pos2.x )
+       	local y_abs = math.abs( pos1.y - pos2.y )
+        local z_abs = math.abs( pos1.z - pos2.z )
+        if x_abs < y_abs and z_abs < y_abs then
+                return "y"
+        elseif x_abs < z_abs and y_abs < z_abs then
+                return "z"
+        elseif z_abs < x_abs and y_abs < x_abs then
+                return "x"
+        end
+        return nil
+end
+
+--------------------
+
+local function import_materials( )
+	local raw_materials = dofile( minetest.get_modpath( "physics" ) .. "/materials.lua" )
+
+	for k, v in pairs( raw_materials ) do
+		-- we need to do this with a secondary table since pairs function
+		-- does not support safe insertions during traversal
+		local group = string.match( k, "^group:([a-z0-9_]+)$" )
+		if group then
+			for name, ndef in pairs( minetest.registered_nodes ) do
+				if ndef.groups[ group ] and not raw_materials[ name ] then
+					materials[ name ] = table.copy( v )
+				end
+			end
+		else
+			materials[ k ] = v
+		end
+	end
+end
+
+--------------------
+
+local function open_global_editor( player_name )
 	local get_formspec = function ( )
 		local formspec = 
-			"size[8,5]" ..
+			"size[12,5]" ..
 			default.gui_bg ..
 			default.gui_bg_img ..
-			"label[0.0,0.0;Weather Properties]" ..
+			"label[0.0,0.0;Physics Properties]" ..
 			"box[0.0,0.6;3.8,0.1;#555555]" ..
+			"box[4.0,0.6;7.8,0.1;#555555]" ..
 
-			"label[0.0,1.1;Temperature:]" ..
-			"button[2.0,1.2;0.7,0.3;temp_sub;<]" ..
+			"label[0.0,1.1;World Gravity:]" ..
+			"button[2.0,1.2;0.7,0.3;gravity_sub;<]" ..
 			"box[2.5,1.0;0.7,0.6;#000000]" ..
-			"button[3.2,1.2;0.7,0.3;temp_add;>]" ..
-			string.format( "label[2.7,1.1;%d]", 32 ) ..
+			"button[3.2,1.2;0.7,0.3;gravity_add;>]" ..
+			string.format( "label[2.7,1.1;%d]", config.world_gravity ) ..
 
-			"label[0.0,2.1;Wind Speed:]" ..
-			"button[2.0,2.2;0.7,0.3;wind_sub;<]" ..
+			"label[0.0,2.1;Air Density:]" ..
+			"button[2.0,2.2;0.7,0.3;density_sub;<]" ..
 			"box[2.5,2.0;0.7,0.6;#000000]" ..
-			"button[3.2,2.2;0.7,0.3;wind_add;>]" ..
-			string.format( "label[2.7,2.1;%d]", 12 ) ..
+			"button[3.2,2.2;0.7,0.3;density_add;>]" ..
+			string.format( "label[2.7,2.1;%0.1f]", config.air_density ) ..
 
-			"label[0.0,3.1;Precipitation:]" ..
-			"button[2.0,3.2;0.7,0.3;prec_sub;<]" ..
+			"label[0.0,3.1;Air Viscosity:]" ..
+			"button[2.0,3.2;0.7,0.3;viscosity_sub;<]" ..
 			"box[2.5,3.0;0.7,0.6;#000000]" ..
-			"button[3.2,3.2;0.7,0.3;prec_add;>]" ..
-			string.format( "label[2.7,3.1;%0.1f]", 0.1 ) ..
+			"button[3.2,3.2;0.7,0.3;viscosity_add;>]" ..
+			string.format( "label[2.7,3.1;%0.1f]", config.air_viscosity ) ..
 
-			"label[4.0,0.0;Physics Properties]" ..
-			"box[4.0,0.6;3.8,0.1;#555555]" ..
 
-			"label[4.0,1.1;World Gravity:]" ..
-			"button[6.0,1.2;0.7,0.3;gravity_sub;<]" ..
+			"label[4.0,1.1;Solid Friction:]" ..
+			"button[6.0,1.2;0.7,0.3;sol_friction_sub;<]" ..
 			"box[6.5,1.0;0.7,0.6;#000000]" ..
-			"button[7.2,1.2;0.7,0.3;gravity_add;>]" ..
-			string.format( "label[6.7,1.1;%d]", physics.world_gravity ) ..
+			"button[7.2,1.2;0.7,0.3;sol_friction_add;>]" ..
+			string.format( "label[6.7,1.1;%0.1f]", config.default_solid.friction ) ..
 
-			"label[4.0,2.1;Air Density:]" ..
-			"button[6.0,2.2;0.7,0.3;density_sub;<]" ..
+			"label[4.0,2.1;Solid Elasticity:]" ..
+			"button[6.0,2.2;0.7,0.3;sol_elasticity_sub;<]" ..
 			"box[6.5,2.0;0.7,0.6;#000000]" ..
-			"button[7.2,2.2;0.7,0.3;density_add;>]" ..
-			string.format( "label[6.7,2.1;%0.1f]", physics.air_density ) ..
+			"button[7.2,2.2;0.7,0.3;sol_elasticity_add;>]" ..
+			string.format( "label[6.7,2.1;%0.1f]", config.default_solid.elasticity ) ..
 
-			"label[4.0,3.1;Air Viscosity:]" ..
-			"button[6.0,3.2;0.7,0.3;viscosity_sub;<]" ..
-			"box[6.5,3.0;0.7,0.6;#000000]" ..
-			"button[7.2,3.2;0.7,0.3;viscosity_add;>]" ..
-			string.format( "label[6.7,3.1;%0.1f]", physics.air_viscosity ) ..
+
+			"label[8.0,1.1;Liquid Viscosity:]" ..
+			"button[10.0,1.2;0.7,0.3;liq_viscosity_sub;<]" ..
+			"box[10.5,1.0;0.7,0.6;#000000]" ..
+			"button[11.2,1.2;0.7,0.3;liq_viscosity_add;>]" ..
+			string.format( "label[10.7,1.1;%0.1f]", config.default_liquid.viscosity ) ..
+
+			"label[8.0,2.1;Liquid Density:]" ..
+			"button[10.0,2.2;0.7,0.3;liq_density_sub;<]" ..
+			"box[10.5,2.0;0.7,0.6;#000000]" ..
+			"button[11.2,2.2;0.7,0.3;liq_density_add;>]" ..
+			string.format( "label[10.7,2.1;%0.1f]", config.default_liquid.density ) ..
+
 
 			"box[0.0,4.0;3.8,0.1;#555555]" ..
-			"button_exit[6.0,4.5;2,0.3;close;Close]"
+			"box[4.0,0.6;7.8,0.1;#555555]" ..
+			"button_exit[10.0,4.5;2,0.3;close;Close]"
 		return formspec
 	end
 
 	local on_close = function ( meta, player, fields )
+		if fields.close then return end
+
 		if fields.gravity_sub then
-			physics.world_gravity = math.max( 0.0, physics.world_gravity - 1 )
+			config.world_gravity = math.max( 0.0, config.world_gravity - 1 )
 		elseif fields.gravity_add then
-			physics.world_gravity = math.min( 10, physics.world_gravity + 1 )
+			config.world_gravity = math.min( 10, config.world_gravity + 1 )
 		elseif fields.density_sub then
-			physics.air_density = math.max( 0.0, physics.air_density - 0.1 )
+			config.air_density = math.max( 0.0, config.air_density - 0.1 )
 		elseif fields.density_add then
-			physics.air_density = math.min( 1.0, physics.air_density + 0.1 )
+			config.air_density = math.min( 1.0, config.air_density + 0.1 )
 		elseif fields.viscosity_sub then
-			physics.air_viscosity = math.max( 0.0, physics.air_viscosity - 0.1 )
+			config.air_viscosity = math.max( 0.0, config.air_viscosity - 0.1 )
 		elseif fields.viscosity_add then
-			physics.air_viscosity = math.min( 1.0, physics.air_viscosity + 0.1 )
-		else
-			return
+			config.air_viscosity = math.min( 1.0, config.air_viscosity + 0.1 )
 		end
+
 		minetest.update_form( player_name, get_formspec( ) )
 	end
 
 	minetest.create_form( nil, player_name, get_formspec( ), on_close )
 end
 
-physics.open_entity_editor = function ( player_name, entity )
-	if not entities[ entity.itemstring ] then
-		entities[ entity.itemstring ] = entity.physics
+local function open_solid_editor( player_name, node_name )
+	local def = minetest.registered_items[ node_name ]
+	local props = materials[ node_name ] or { friction = config.default_solid.friction, elasticity = config.default_solid.elasticity }
+
+	local get_formspec = function ( )
+		local formspec = 
+			"size[8,4]" ..
+			default.gui_bg ..
+			default.gui_bg_img ..
+			string.format( "label[0.0,0.0;Physics Properties (%s)]", materials[ node_name ] and "Override" or "Default" ) ..
+			"box[0.0,0.6;7.8,0.1;#555555]" ..
+
+			"label[0.0,1.1;Friction:]" ..
+			"button[2.0,1.2;0.7,0.3;friction_sub;<]" ..
+			"box[2.5,1.0;0.7,0.6;#000000]" ..
+			"button[3.2,1.2;0.7,0.3;friction_add;>]" ..
+			string.format( "label[2.7,1.1;%0.1f]", props.friction ) ..
+
+			"label[4.0,1.1;Elasticity:]" ..
+			"button[6.0,1.2;0.7,0.3;elasticity_sub;<]" ..
+			"box[6.5,1.0;0.7,0.6;#000000]" ..
+			"button[7.2,1.2;0.7,0.3;elasticity_add;>]" ..
+			string.format( "label[6.7,1.1;%0.1f]", props.elasticity ) ..
+
+			"box[0.0,3.0;7.8,0.1;#555555]" ..
+			string.format( "label[0.0,3.4;%s]", def.description ) ..
+			"button[4.0,3.5;2,0.3;reset;Reset]" ..
+			"button_exit[6.0,3.5;2,0.3;close;Close]"
+		return formspec
 	end
-	local prop = this.physics
+
+	local on_close = function ( meta, player, fields )
+		if fields.close then return end
+
+		if fields.reset then
+			materials[ node_name ] = nil
+		else
+			if fields.friction_sub then
+				props.friction = math.max( 0.0, props.friction - 0.1 )
+			elseif fields.friction_add then
+				props.friction = math.min( 1.0, props.friction + 0.1 )
+			elseif fields.elasticity_sub then
+				props.elasticity = math.max( 0.0, props.elasticity - 0.1 )
+			elseif fields.elasticity_add then
+				props.elasticity = math.min( 1.0, props.elasticity + 0.1 )
+			end
+
+			if not materials[ node_name ] then
+				materials[ node_name ] = props
+			end
+		end
+
+		minetest.update_form( player_name, get_formspec( ) )
+	end
+
+	minetest.create_form( nil, player_name, get_formspec( ), on_close )
+end
+
+local function open_liquid_editor( player_name, node_name )
+	local def = minetest.registered_items[ node_name ]
+	local props = materials[ node_name ] or { viscosity = config.default_liquid.viscosity, density = config.default_liquid.density }
+
+	local get_formspec = function ( )
+		local formspec = 
+			"size[8,4]" ..
+			default.gui_bg ..
+			default.gui_bg_img ..
+			string.format( "label[0.0,0.0;Physics Properties (%s)]", materials[ node_name ] and "Override" or "Default" ) ..
+			"box[0.0,0.6;7.8,0.1;#555555]" ..
+
+			"label[0.0,1.1;Viscosity:]" ..
+			"button[2.0,1.2;0.7,0.3;viscosity_sub;<]" ..
+			"box[2.5,1.0;0.7,0.6;#000000]" ..
+			"button[3.2,1.2;0.7,0.3;viscosity_add;>]" ..
+			string.format( "label[2.7,1.1;%0.1f]", props.viscosity ) ..
+
+			"label[4.0,1.1;Density:]" ..
+			"button[6.0,1.2;0.7,0.3;density_sub;<]" ..
+			"box[6.5,1.0;0.7,0.6;#000000]" ..
+			"button[7.2,1.2;0.7,0.3;density_add;>]" ..
+			string.format( "label[6.7,1.1;%0.1f]", props.density ) ..
+
+			"box[0.0,3.0;7.8,0.1;#555555]" ..
+			string.format( "label[0.0,3.4;%s]", def.description ) ..
+			"button_exit[4.0,3.5;2,0.3;reset;Reset]" ..
+			"button_exit[6.0,3.5;2,0.3;close;Close]"
+		return formspec
+	end
+
+	local on_close = function ( meta, player, fields )
+		if fields.close then return end
+
+		if fields.reset then
+			materials[ node_name ] = nil
+		else
+			if fields.viscosity_sub then
+				props.viscosity = math.max( 0.0, props.viscosity - 0.1 )
+			elseif fields.viscosity_add then
+				props.viscosity = math.min( 1.0, props.viscosity + 0.1 )
+			elseif fields.density_sub then
+				props.density = math.max( 0.01, props.density - 0.1 )
+			elseif fields.density_add then
+				props.density = math.min( 1.0, props.density + 0.1 )
+			else
+				return
+			end
+		end
+
+		if not materials[ node_name ] then
+			materials[ node_name ] = props
+		end
+
+		minetest.update_form( player_name, get_formspec( ) )
+	end
+
+	minetest.create_form( nil, player_name, get_formspec( ), on_close )
+end
+
+local function open_entity_editor( player_name, entity )
+	local props = entity.physics
+
 	local get_formspec = function ( )
 		local formspec = 
 			"size[8,4]" ..
@@ -114,179 +291,63 @@ physics.open_entity_editor = function ( player_name, entity )
 			"button[2.0,1.2;0.7,0.3;friction_sub;<]" ..
 			"box[2.5,1.0;0.7,0.6;#000000]" ..
 			"button[3.2,1.2;0.7,0.3;friction_add;>]" ..
-			string.format( "label[2.7,1.1;%0.1f]", prop.friction ) ..
+			string.format( "label[2.7,1.1;%0.1f]", props.friction ) ..
 
 			"label[0.0,2.1;Density:]" ..
 			"button[2.0,2.2;0.7,0.3;density_sub;<]" ..
 			"box[2.5,2.0;0.7,0.6;#000000]" ..
 			"button[3.2,2.2;0.7,0.3;density_add;>]" ..
-			string.format( "label[2.7,2.1;%0.1f]", prop.density ) ..
+			string.format( "label[2.7,2.1;%0.1f]", props.density ) ..
 
 			"label[4.0,1.1;Elasticity:]" ..
 			"button[6.0,1.2;0.7,0.3;elasticity_sub;<]" ..
 			"box[6.5,1.0;0.7,0.6;#000000]" ..
 			"button[7.2,1.2;0.7,0.3;elasticity_add;>]" ..
-			string.format( "label[6.7,1.1;%0.1f]", prop.elasticity ) ..
+			string.format( "label[6.7,1.1;%0.1f]", props.elasticity ) ..
 
 			"label[4.0,2.1;Resistance:]" ..
 			"button[6.0,2.2;0.7,0.3;resistance_sub;<]" ..
 			"box[6.5,2.0;0.7,0.6;#000000]" ..
 			"button[7.2,2.2;0.7,0.3;resistance_add;>]" ..
-			string.format( "label[6.7,2.1;%0.1f]", prop.resistance ) ..
+			string.format( "label[6.7,2.1;%0.1f]", props.resistance ) ..
 
 			"box[0.0,3.0;7.8,0.1;#555555]" ..
-			string.format( "image[0.1,3.2;1.0,1.0;%s]", minetest.registered_items[ this.itemstring ].inventory_image ) ..
-			string.format( "label[1.2,3.4;%s (Solid)]", this.description ) ..
-			"button_exit[4.0,3.5;2,0.3;close;Reset]" ..
+			string.format( "label[0.0,3.4;%s (entity)]", entity.name ) ..
 			"button_exit[6.0,3.5;2,0.3;close;Close]"
 
 		return formspec
 	end
 
 	local on_close = function ( meta, player, fields )
-		if fields.reset then
-			objects[ this.itemstring ] = nil
-			return
-		elseif fields.friction_sub then
-			prop.friction = math.max( 0.0, prop.friction - 0.1 )
+		if fields.close then return end
+
+		if fields.friction_sub then
+			props.friction = math.max( 0.0, props.friction - 0.1 )
 		elseif fields.friction_add then
-			prop.friction = math.min( 1.0, prop.friction + 0.1 )
+			props.friction = math.min( 1.0, props.friction + 0.1 )
 		elseif fields.density_sub then
-			prop.density = math.max( 0.0, prop.density - 0.1 )
+			props.density = math.max( 0.0, props.density - 0.1 )
 		elseif fields.density_add then
-			prop.density = math.min( 1.0, prop.density + 0.1 )
+			props.density = math.min( 1.0, props.density + 0.1 )
 		elseif fields.elasticity_sub then
-			prop.elasticity = math.max( 0.0, prop.elasticity - 0.1 )
+			props.elasticity = math.max( 0.0, props.elasticity - 0.1 )
 		elseif fields.elasticity_add then
-			prop.elasticity = math.min( 1.0, prop.elasticity + 0.1 )
+			props.elasticity = math.min( 1.0, props.elasticity + 0.1 )
 		elseif fields.resistance_sub then
-			prop.resistance = math.max( 0.0, prop.resistance - 0.1 )
+			props.resistance = math.max( 0.0, props.resistance - 0.1 )
 		elseif fields.resistance_add then
-			prop.resistance = math.min( 1.0, prop.resistance + 0.1 )
-		else
-			return
+			props.resistance = math.min( 1.0, props.resistance + 0.1 )
 		end
+
 		minetest.update_form( player_name, get_formspec( ) )
 	end
 
 	minetest.create_form( nil, player_name, get_formspec( ), on_close )
 end
 
-physics.open_solid_editor = function ( player_name, node_name )
-	local def = minetest.registered_items[ node_name ]
-	local solid = materials[ node_name ] or { friction = physics.default_solid.friction, elasticity = physics.default_solid.elasticity }
+--------------------
 
-	local get_formspec = function ( )
-		local formspec = 
-			"size[8,4]" ..
-			default.gui_bg ..
-			default.gui_bg_img ..
-			string.format( "label[0.0,0.0;Physics Properties (%s)]", materials[ node_name ] and "Override" or "Default" ) ..
-			"box[0.0,0.6;7.8,0.1;#555555]" ..
-
-			"label[0.0,1.1;Friction:]" ..
-			"button[2.0,1.2;0.7,0.3;friction_sub;<]" ..
-			"box[2.5,1.0;0.7,0.6;#000000]" ..
-			"button[3.2,1.2;0.7,0.3;friction_add;>]" ..
-			string.format( "label[2.7,1.1;%0.1f]", solid.friction ) ..
-
-			"label[4.0,1.1;Elasticity:]" ..
-			"button[6.0,1.2;0.7,0.3;elasticity_sub;<]" ..
-			"box[6.5,1.0;0.7,0.6;#000000]" ..
-			"button[7.2,1.2;0.7,0.3;elasticity_add;>]" ..
-			string.format( "label[6.7,1.1;%0.1f]", solid.elasticity ) ..
-
-			"box[0.0,3.0;7.8,0.1;#555555]" ..
-			string.format( "image[0.1,3.2;1.0,1.0;%s]", def.tiles[ 1 ].name or def.tiles[ 1 ] ) ..
-			string.format( "label[1.2,3.4;%s]", def.description ) ..
-			"button_exit[4.0,3.5;2,0.3;reset;Reset]" ..
-			"button_exit[6.0,3.5;2,0.3;close;Close]"
-		return formspec
-	end
-
-	local on_close = function ( meta, player, fields )
-		if fields.reset then
-			materials[ node_name ] = nil
-			return
-		elseif fields.friction_sub then
-			solid.friction = math.max( 0.0, solid.friction - 0.1 )
-		elseif fields.friction_add then
-			solid.friction = math.min( 1.0, solid.friction + 0.1 )
-		elseif fields.elasticity_sub then
-			solid.elasticity = math.max( 0.0, solid.elasticity - 0.1 )
-		elseif fields.elasticity_add then
-			solid.elasticity = math.min( 1.0, solid.elasticity + 0.1 )
-		else
-			return
-		end
-
-		if not materials[ node_name ] then
-			materials[ node_name ] = solid
-		end
-		minetest.update_form( player_name, get_formspec( ) )
-	end
-
-	minetest.create_form( nil, player_name, get_formspec( ), on_close )
-end
-
-physics.open_liquid_editor = function ( player_name, node_name )
-	local def = minetest.registered_items[ node_name ]
-	local liquid = materials[ node_name ] or { viscosity = physics.default_liquid.viscosity, density = physics.default_liquid.density }
-
-	local get_formspec = function ( )
-		local formspec = 
-			"size[8,4]" ..
-			default.gui_bg ..
-			default.gui_bg_img ..
-			string.format( "label[0.0,0.0;Physics Properties (%s)]", materials[ node_name ] and "Override" or "Default" ) ..
-			"box[0.0,0.6;3.8,0.1;#555555]" ..
-
-			"label[0.0,1.1;Viscosity:]" ..
-			"button[2.0,1.2;0.7,0.3;viscosity_sub;<]" ..
-			"box[2.5,1.0;0.7,0.6;#000000]" ..
-			"button[3.2,1.2;0.7,0.3;viscosity_add;>]" ..
-			string.format( "label[2.7,1.1;%0.1f]", liquid.viscosity ) ..
-
-			"label[4.0,1.1;Density:]" ..
-			"button[6.0,1.2;0.7,0.3;density_sub;<]" ..
-			"box[6.5,1.0;0.7,0.6;#000000]" ..
-			"button[7.2,1.2;0.7,0.3;density_add;>]" ..
-			string.format( "label[6.7,1.1;%0.1f]", liquid.density ) ..
-
-			"box[0.0,3.0;7.8,0.1;#555555]" ..
-			string.format( "image[0.1,3.2;1.0,1.0;%s]", def.tiles[ 1 ].name or def.tiles[ 1 ] ) ..
-			string.format( "label[1.2,3.4;%s]", def.description ) ..
-			"button_exit[4.0,3.5;2,0.3;reset;Reset]" ..
-			"button_exit[6.0,3.5;2,0.3;close;Close]"
-		return formspec
-	end
-
-	local on_close = function ( meta, player, fields )
-		if fields.reset then
-			materials[ node_name ] = nil
-			return
-		elseif fields.viscosity_sub then
-			liquid.viscosity = math.max( 0.0, liquid.viscosity - 0.1 )
-		elseif fields.viscosity_add then
-			liquid.viscosity = math.min( 1.0, liquid.viscosity + 0.1 )
-		elseif fields.density_sub then
-			liquid.density = math.max( 0.01, liquid.density - 0.1 )
-		elseif fields.density_add then
-			liquid.density = math.min( 1.0, liquid.density + 0.1 )
-		else
-			return
-		end
-
-		if not materials[ node_name ] then
-			materials[ node_name ] = liquid
-		end
-		minetest.update_form( player_name, get_formspec( ) )
-	end
-
-	minetest.create_form( nil, player_name, get_formspec( ), on_close )
-end
-
-minetest.register_tool( "athletics:physics_wand", {
+minetest.register_tool( "physics:physics_wand", {
 	description = "Physics Wand",
 	range = 5,
 	inventory_image = "physics_wand.png",
@@ -297,121 +358,145 @@ minetest.register_tool( "athletics:physics_wand", {
 		local player_name = clicker:get_player_name( )
 		if pointed_thing.type == "object" then
 			local this = pointed_thing.ref:get_luaentity( )
-			physics.open_object_editor( player_name, this )
+			open_entity_editor( player_name, this )
 		elseif pointed_thing.type == "node" then
 			local node_name = minetest.get_node( pointed_thing.under ).name
 			local def = minetest.registered_items[ node_name ]
 			if def.groups.liquid then
-				physics.open_liquid_editor( player_name, node_name )
+				open_liquid_editor( player_name, node_name )
 			else
-				physics.open_solid_editor( player_name, node_name )
+				open_solid_editor( player_name, node_name )
 			end
 		else
-			physics.open_global_editor( player_name )
+			open_global_editor( player_name )
 		end
 	end
 } )
 
+--------------------
+
 function BasicPhysics( self )
-	if entities[ self.name ] then
-		-- override physics of prototype
-		self.physics = entities[ self.name ]
+	local old_on_step = self.on_step
+	local unknown_ndef = { walkable = true, groups = { } }
+
+	local function play_sound( name )
+		minetest.sound_play( self.motion_sounds[ name ] or motion_sounds[ name ],
+			{ object = self.object, xgain = 0.4, loop = false }, true )
 	end
 
-	self.vel = { x = 0, y = 0, z = 0 }
-	self.object:setvelocity( self.vel )
-	self.object:setacceleration( { x = 0, y = -physics.world_gravity, z = 0 } )
-	
-	self.handle_motion_physics = function ( )
-		local vel = self.object:getvelocity( )
-		local pos = self.object:getpos( )
-		local node_name = minetest.get_node( pos ).name
-		local prop = self.physics
+	local function handle_physics( pos, new_vel, old_vel, collisions )
+		local props = self.physics
+		local node_below = minetest.get_node_above( pos, self.is_swimming and 0.3 or -0.2 )
+		local ndef_below = minetest.registered_nodes[ node_below.name ] or unknown_ndef
 
-		local ndef = minetest.registered_nodes[ node_name ]
+		-- if entity is rolling or floating, then it should slow down and stop
+		if ndef_below.groups.liquid then
+			local liquid = materials[ node_below.name ] or config.default_liquid
 
-		if ndef.groups.liquid then
-			-- ball should sink or float in water and lava
-			local liquid = materials[ node_name ] or physics.default_liquid
-
-			vel.x = vel.x * ( 1.0 - liquid.viscosity / 2 )
-			vel.z = vel.z * ( 1.0 - liquid.viscosity / 2 )
-			if not self.is_floating then
-				-- reduce inertia only on initial splash
-				if vel.y < -2 then
-					minetest.sound_play( "ambience_player_dive", { object = self.object, gain = 0.4, loop = false } )
-				end
-				vel.y = vel.y * ( 1.0 - prop.resistance * liquid.viscosity )
+			if not self.is_swimming and new_vel.y < -2.0 then
+				play_sound( "diving" )
 			end
 
-			self.object:setacceleration_vert( physics.world_gravity * ( liquid.density - prop.density ) )
-			self.object:setvelocity_vert( vel.y )
-			self.is_floating = true
+			local drag = -new_vel.y * liquid.viscosity * 1.5
+			local buoyancy = props.density - liquid.density
+       			self.object:set_acceleration_vert( -config.world_gravity * buoyancy + drag )
+
+			new_vel.x = new_vel.x * ( 1.0 - props.resistance * liquid.viscosity )
+			new_vel.z = new_vel.z * ( 1.0 - props.resistance * liquid.viscosity )
+
+	       		self.is_swimming = true
+
+		elseif self.is_swimming then
+			play_sound( "floating" )
+
+			self.object:set_acceleration_vert( ramp( -config.world_gravity, new_vel.y, 2.0 ) )   -- hack to reduce oscilations
+			self.is_swimming = false
+
+		elseif ndef_below.walkable and new_vel.y <= 0 then
+			local solid = materials[ node_below.name ] or config.default_solid
+			new_vel.x = new_vel.x * ( 1.0 - props.friction * solid.friction )
+			new_vel.z = new_vel.z * ( 1.0 - props.friction * solid.friction )
+
 		else
-			local node_below = minetest.get_node_above( pos, -0.5 )
-			local ndef_below = minetest.registered_nodes[ node_below.name ]
-
-			-- if ball is rolling or floating, then it should slow down and stop
-			if ndef_below.groups.liquid then
-				local liquid = materials[ node_below.name ] or physics.default_liquid
-
-				self.object:setacceleration_vert( -physics.world_gravity * ( 1.0 - prop.density * liquid.viscosity ) )
-				if self.sound_delay == 0 and vel.y > 0 then
-					self.sound_delay = 12
-					minetest.sound_play( "ambience_player_splash", { object = self.object, gain = 0.4, loop = false } )
-				end
-				if vel.y <= 0 then
-					local liquid = materials[ node_below.name ] or physics.default_liquid
-					vel.x = vel.x * ( 1.0 - prop.friction * liquid.viscosity )
-					vel.z = vel.z * ( 1.0 - prop.friction * liquid.viscosity )
-
-				end
-
-			elseif ndef_below.walkable and vel.y <= 0 then
-				local solid = materials[ node_below.name ] or physics.default_solid
-				vel.x = vel.x * ( 1.0 - prop.friction * solid.friction )
-				vel.z = vel.z * ( 1.0 - prop.friction * solid.friction )
-
-			else
-				vel = vector.multiply( vel, 1.0 - prop.resistance * physics.air_viscosity )
-				self.object:setacceleration_vert( physics.world_gravity * ( physics.air_density - prop.density ) )
-			end
-
-			-- if ball collided while rolling or floating, then it should bounce
-			if vel.y == 0 and self.vel.y < 0 then
-				vel.y = -self.vel.y * prop.elasticity
-				minetest.sound_play( "ballkick4", { object = self.object, gain = 0.8 } )
-			end
-			if vel.x == 0 and math.abs( self.vel.x ) > 0.2 then
-				vel.x = -self.vel.x * prop.elasticity
-				minetest.sound_play( "ballkick4", { object = self.object, gain = 0.8 } )
-			end
-			if vel.z == 0 and math.abs( self.vel.z ) > 0.2 then 
-				vel.z = -self.vel.z * prop.elasticity
-				minetest.sound_play( "ballkick4", { object = self.object, gain = 0.8 } )
-			end
-			self.is_floating = false
+			new_vel = vector.multiply( new_vel, 1.0 - props.resistance * config.air_viscosity )
+			self.object:set_acceleration_vert( config.world_gravity * ( config.air_density - props.density ) )
 		end
 
-		if math.abs( vel.x ) <= 0.2 and math.abs( vel.z ) <= 0.2 then
-			vel.x = 0
-			vel.z = 0
+--[[		-- this is a hacky workaround for broken collision detection in engine
+		if new_vel.y == 0 and abs( old_vel.y ) > 0.2 then
+			new_vel.y = self.has_bounce and old_vel.y or -old_vel.y * self.elasticity
+			self.has_bounce = not self.has_bounce
+		elseif new_vel.x == 0 and abs( old_vel.x ) > 0.2 then
+			new_vel.x = self.has_bounce and old_vel.x or -old_vel.x * self.elasticity
+			self.has_bounce = not self.has_bounce
+		elseif new_vel.z == 0 and abs( old_vel.z ) > 0.2 then
+			new_vel.z = self.has_bounce and old_vel.z or -old_vel.z * self.elasticity
+			self.has_bounce = not self.has_bounce
+		else
+			self.has_bounce = false
 		end
 
-		self.set_velocity( vel.x, vel.y, vel.z )
+		if self.has_bounce then
+			minetest.sound_play( "ballkick4", { object = self.object, gain = 0.8 } )
+		end]]
+
+		-- if entity collided while rolling or floating, then it should bounce
+		local hit_axis
+		if new_vel.y == 0 and abs( old_vel.y ) > 0.2 then
+			hit_axis = "y"
+			new_vel.y = -old_vel.y * props.elasticity
+		elseif new_vel.x == 0 and abs( old_vel.x ) > 0.2 then
+			hit_axis = "x"
+			new_vel.x = -old_vel.x * props.elasticity
+		elseif new_vel.z == 0 and abs( old_vel.z ) > 0.2 then
+			hit_axis = "z"
+			new_vel.z = -old_vel.z * props.elasticity
+		end
+
+		if hit_axis then
+			for idx = 1, #collisions  do
+				local hit_info = collisions[ idx ]
+
+				if hit_info.side[ hit_axis ] ~= 0 and hit_info.impacts then
+					local node = minetest.get_node( hit_info.node_pos )
+					local ndef = minetest.registered_nodes[ node.name ] or unknown_ndef
+
+					if ndef.sounds then
+						local sound = "hitting_" .. string.match( ndef.sounds.footstep.name, "^default_(.-)_footstep$" )
+						play_sound( motion_sounds[ sound ] and sound or "hitting_stone" )
+					else
+						play_sound( "hitting_stone" )
+					end
+
+				end
+			end
+		end
+
+		if abs( new_vel.x ) <= 0.1 and abs( new_vel.z ) <= 0.1 then
+			new_vel.x = 0.0
+			new_vel.z = 0.0
+		end
+
+		self.object:set_velocity( new_vel )
 	end
 
-	self.set_velocity = function ( x, y, z )
-		self.vel = { x = x, y = y, z = z }
-		self.object:setvelocity( self.vel )
+	self.on_step = function( self, dtime, pos, rot, new_vel, old_vel, move_result )
+		--S1()		
+		local is_standing = vector.equals( new_vel, vector.origin ) and move_result.is_standing
+		if not is_standing then
+			handle_physics( pos, new_vel, old_vel, move_result.collisions )
+		end
+		--S1_()
+		old_on_step( self, dtime, pos, rot, new_vel, old_vel, move_result )
 	end
+end
 
-	self.add_velocity = function ( x, y, z )
-		self.vel = { x = self.vel.x + x, y = self.vel.y + y, z = self.vel.z + z }
-		self.object:setvelocity( self.vel )
-	end
+--------------------
 
-	self.reset_acceleration = function ( )
-		self.object:setacceleration_vert( -physics.world_gravity )
-	end
+import_materials( )
+
+-- compatibility for Minetest S3 engine
+
+if not vector.origin and not minetest.get_node_above then
+	dofile( minetest.get_modpath( "physics" ) .. "/compatibility.lua" )
 end
