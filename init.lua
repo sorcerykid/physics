@@ -1,4 +1,4 @@
-d--------------------------------------------------------
+--------------------------------------------------------
 -- Minetest :: Interactive Physics (physics)
 --
 -- See README.txt for licensing and release notes.
@@ -31,6 +31,15 @@ local motion_sounds = {
 local min = math.min
 local max = math.max
 local abs = math.abs
+local match = string.match
+
+local _ = nil
+
+local function is_match( text, glob )
+	-- use array for captures
+	_ = { match( text, glob ) }
+	return #_ > 0 and _ or nil
+end
 
 local function ramp( f, cur_v, max_v )
        	-- min function handles NaN, but let's err on the side of caution
@@ -38,9 +47,9 @@ local function ramp( f, cur_v, max_v )
 end
 
 local function get_facing_axis( pos1, pos2 )
-        local x_abs = math.abs( pos1.x - pos2.x )
-       	local y_abs = math.abs( pos1.y - pos2.y )
-        local z_abs = math.abs( pos1.z - pos2.z )
+        local x_abs = abs( pos1.x - pos2.x )
+       	local y_abs = abs( pos1.y - pos2.y )
+        local z_abs = abs( pos1.z - pos2.z )
         if x_abs < y_abs and z_abs < y_abs then
                 return "y"
         elseif x_abs < z_abs and y_abs < z_abs then
@@ -378,6 +387,7 @@ minetest.register_tool( "physics:physics_wand", {
 function BasicPhysics( self )
 	local old_on_step = self.on_step
 	local unknown_ndef = { walkable = true, groups = { } }
+	local collisionbox = self.collisionbox or self.initial_properties.collisionbox
 
 	local function play_sound( name )
 		minetest.sound_play( self.motion_sounds[ name ] or motion_sounds[ name ],
@@ -386,7 +396,9 @@ function BasicPhysics( self )
 
 	local function handle_physics( pos, new_vel, old_vel, collisions )
 		local props = self.physics
-		local node_below = minetest.get_node_above( pos, self.is_swimming and 0.3 or -0.2 )
+		local y_min = collisionbox[ 2 ]
+--		local node_below = minetest.get_node_above( pos, self.is_swimming and 0.3 or -0.2 )
+		local node_below = minetest.get_node_above( pos, self.is_swimming and y_min + 0.4 or y_min - 0.1 )
 		local ndef_below = minetest.registered_nodes[ node_below.name ] or unknown_ndef
 
 		-- if entity is rolling or floating, then it should slow down and stop
@@ -461,8 +473,8 @@ function BasicPhysics( self )
 					local node = minetest.get_node( hit_info.node_pos )
 					local ndef = minetest.registered_nodes[ node.name ] or unknown_ndef
 
-					if ndef.sounds then
-						local sound = "hitting_" .. string.match( ndef.sounds.footstep.name, "^default_(.-)_footstep$" )
+					if ndef.sounds and is_match( ndef.sounds.footstep.name, "^default_(.-)_footstep$" ) then
+						local sound = _[ 1 ] and "hitting_" .. _[ 1 ] or "hitting_stone"
 						play_sound( motion_sounds[ sound ] and sound or "hitting_stone" )
 					else
 						play_sound( "hitting_stone" )
