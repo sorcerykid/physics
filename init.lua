@@ -469,7 +469,7 @@ function BasicPhysics( self )
 			for idx = 1, #collisions  do
 				local hit_info = collisions[ idx ]
 
-				if hit_info.side[ hit_axis ] ~= 0 and hit_info.impacts then
+				if hit_info.side[ hit_axis ] ~= 0 and hit_info.is_impact then
 					local node = minetest.get_node( hit_info.node_pos )
 					local ndef = minetest.registered_nodes[ node.name ] or unknown_ndef
 
